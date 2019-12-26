@@ -25,13 +25,15 @@
 */
 #pragma once
 #include <cstddef>
-#include <functional>
 
 namespace sched {
 
 	// Opaque type that `Platfrom` can treat as `void*`
 	struct Fiber;
 
+
+	// entry point for a fiber
+	using FiberEntry = void(void* param);
 
 	struct Platform {
 
@@ -48,7 +50,7 @@ namespace sched {
 		void (*releaseFiberForCurrentThread)(Fiber* fiber) = nullptr;
 
 		// Create a new fiber
-		Fiber* (*createFiber)(std::function<void()> entry, int stackSize) = nullptr;
+		Fiber* (*createFiber)(FiberEntry* entry, void* param, int stackSize) = nullptr;
 
 		// Destroy a fiber
 		void (*releaseFiber)(Fiber* fiber) = nullptr;

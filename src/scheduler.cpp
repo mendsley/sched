@@ -36,11 +36,15 @@ using sched::Fiber;
 using sched::Platform;
 using sched::Scheduler;
 using sched::Task;
+using sched::TaskEntry;
 
 
 struct sched::Task {
 	Fiber* fiber = nullptr;
 	Task* next = nullptr; ///NOTE(mendsley): Owned by TaskList
+
+	TaskEntry* entry;
+	void* entryParam;
 };
 
 
@@ -68,6 +72,7 @@ struct sched::Scheduler {
 	std::mutex taskListMutex;
 	std::condition_variable taskListCondvar;
 	TaskList taskList;
+	TaskList taskListCompleted;
 	int activeThreads = 0;
 };
 
@@ -117,7 +122,6 @@ static Task* taskListPop(TaskList* taskList) {
 
 
 // Single pass through the scheduler. Wait for a task and continue it
-template<bool deleteOutgoingTask>
 static void schedule_task(SchedulerThread* thread) {
 	assert(thread);
 	Scheduler* scheduler = thread->scheduler;
@@ -145,11 +149,18 @@ static void schedule_task(SchedulerThread* thread) {
 
 	assert(task);
 	thread->currentTask = task;
-	if (deleteOutgoingTask) {
-		platform->releaseFiber(outgoingFiber);
-		destroy(platform, outgoingTask);
-	}
 	platform->switchToFiber(outgoingFiber, task->fiber);
+
+	// delete completed tasks
+	scheduler->taskListMutex.lock();
+	while (Task* task = taskListPop(&scheduler->taskListCompleted)) {
+		assert(task);
+		assert(task->fiber);
+
+		platform->releaseFiber(task->fiber);
+		destroy(platform, task);
+	}
+	scheduler->taskListMutex.unlock();
 }
 
 
@@ -247,7 +258,7 @@ void sched::waitForOtherThreadsAndDetach(Scheduler* scheduler) {
 	--scheduler->activeThreads;
 	while (scheduler->activeThreads > 0) {
 		scheduler->taskListMutex.unlock();
-		schedule_task<false>(thread);
+		schedule_task(thread);
 		scheduler->taskListMutex.lock();
 	}
 	scheduler->taskListMutex.unlock();
@@ -260,7 +271,7 @@ void sched::waitForOtherThreadsAndDetach(Scheduler* scheduler) {
 }
 
 
-Task* sched::spawn(std::function<void()> entry, int stackSize) {
+Task* sched::spawn(TaskEntry* entry, void* param, int stackSize) {
 	SchedulerThread* thread = s_tlsSchedulerThread;
 	if (nullptr == thread) {
 		assert_msg(thread != nullptr, "No scheduler is attached to the current thread");
@@ -268,11 +279,31 @@ Task* sched::spawn(std::function<void()> entry, int stackSize) {
 	}
 
 	assert(thread->scheduler);
-	return spawn(thread->scheduler, std::move(entry), stackSize);
+	return spawn(thread->scheduler, entry, param, stackSize);
 }
 
 
-Task* sched::spawn(Scheduler* scheduler, std::function<void()> entry, int stackSize) {
+static void taskFiber(void* context) {
+	Task* task = (Task*)context;
+	assert(task);
+	assert(task->entry);
+
+	task->entry(task->entryParam);
+
+	SchedulerThread* thread = s_tlsSchedulerThread;
+	assert(thread);
+	Scheduler* scheduler = thread->scheduler;
+	assert(scheduler);
+
+	scheduler->taskListMutex.lock();
+	taskListPush(&scheduler->taskListCompleted, task);
+	scheduler->taskListMutex.unlock();
+
+	schedule_task(thread);
+}
+
+
+Task* sched::spawn(Scheduler* scheduler, TaskEntry* entry, void* param, int stackSize) {
 	assert(scheduler);
 	assert(entry);
 
@@ -282,10 +313,9 @@ Task* sched::spawn(Scheduler* scheduler, std::function<void()> entry, int stackS
 
 	const Platform* platform = scheduler->platform;
 	Task* task = construct<Task>(platform);
-	task->fiber = platform->createFiber([e = std::move(entry)]() {
-		e();
-		schedule_task<true>(s_tlsSchedulerThread);
-	}, stackSize);
+	task->entry = entry;
+	task->entryParam = param;
+	task->fiber = platform->createFiber(taskFiber, task, stackSize);
 	assert(task->fiber);
 
 	scheduler->taskListMutex.lock();
@@ -328,7 +358,7 @@ void sched::suspendSelf() {
 	Scheduler* scheduler = thread->scheduler;
 	assert(scheduler);
 
-	schedule_task<false>(thread);
+	schedule_task(thread);
 }
 
 

@@ -26,12 +26,13 @@
 #pragma once
 
 #include <sched/platform.h>
-#include <functional>
 
 namespace sched {
 
 	struct Scheduler;
 	struct Task;
+
+	using TaskEntry = void(void* param);
 
 	// Create a new scheduling context
 	Scheduler* createScheduler(const Platform* platform);
@@ -50,10 +51,10 @@ namespace sched {
 	void waitForOtherThreadsAndDetach(Scheduler* scheduler);
 
 	// Creates a new task on the current thread's scheduler
-	Task* spawn(std::function<void()> entry, int stackSize = 0);
+	Task* spawn(TaskEntry* entry, void* param, int stackSize = 0);
 
 	// Creates a new task on a specific scheduler
-	Task* spawn(Scheduler* scheduler, std::function<void()> entry, int stackSize = 0);
+	Task* spawn(Scheduler* scheduler, TaskEntry* entry, void* param, int stackSize = 0);
 
 	// Gets the currently executing task
 	Task* getCurrentTask();

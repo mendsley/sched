@@ -33,6 +33,7 @@
 #include <windows.h>
 
 using sched::Fiber;
+using sched::FiberEntry;
 using sched::Platform;
 
 
@@ -61,34 +62,38 @@ void sched::platformDefaults(Platform* platform) {
 		ConvertFiberToThread();
 	};
 
-	platform->createFiber = [](std::function<void()> entry, int stackSize) {
+	platform->createFiber = [](FiberEntry* entry, void* param, int stackSize) {
 		assert(entry);
 		assert(stackSize > 0);
 
 		struct Context {
-			std::function<void()> entry;
+			FiberEntry* entry;
+			void* entryParam;
 			void* originatingFiber;
 		};
 
 		Context ctx;
-		ctx.entry = std::move(entry);
+		ctx.entry = entry;
+		ctx.entryParam = param;
 		ctx.originatingFiber = GetCurrentFiber();
 		assert(ctx.originatingFiber);
 
 		void* fiber = CreateFiber(stackSize, [](void* fiberParam) {
 			assert(fiberParam);
 
-			std::function<void()> entry;
+			FiberEntry* entry;
+			void* param;
 			{
 				Context* ctx = (Context*)fiberParam;
 				assert(ctx->originatingFiber);
 
-				entry = std::move(ctx->entry);
+				entry = ctx->entry;
+				param = ctx->entryParam;
 				SwitchToFiber(ctx->originatingFiber);
 			}
 
 			assert(entry);
-			entry();
+			entry(param);
 		}, &ctx);
 
 		// switch to the fiber so we can copy the entry function
